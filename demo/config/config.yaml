@@ -1,0 +1,61 @@
+# MultiFusion-Detector Configuration
+
+# Model settings
+models:
+  coedit:
+    name: "grammarly/coedit-large"
+    # Alternative: "grammarly/coedit-xl" for better quality
+    # Alternative: "grammarly/coedit-xxl" for best quality
+    device: "auto"  # auto, cuda, cpu, mps
+
+  bart:
+    name: "facebook/bart-base"
+    # Alternative: "facebook/bart-large" for better quality
+    device: "auto"
+
+# Fusion strategy
+fusion:
+  strategy: "weighted"  # weighted, adaptive, cascade
+
+  # Weighted fusion settings
+  weighted:
+    weights:
+      coedit: 0.5
+      tocsin: 0.5
+
+  # Adaptive fusion settings
+  adaptive:
+    base_weights:
+      coedit: 0.5
+      tocsin: 0.5
+    adaptation_mode: "length"  # length, variance, confidence
+
+  # Cascade fusion settings
+  cascade:
+    high_threshold: 0.95
+    low_threshold: 0.85
+    fusion_weight: 0.6  # Weight for CoEdIT in second stage
+
+# TOCSIN channel settings
+tocsin:
+  deletion_pct: 0.015  # 1.5% token deletion
+  n_samples: 10  # Number of perturbation samples
+
+# Evaluation settings
+evaluation:
+  batch_size: 32
+  show_progress: true
+  save_intermediate: false
+
+# Data settings
+data:
+  base_dir: "../"
+  tocsin_data_dir: "TOCSIN-main/TOCSIN-main/exp_API-based_model/data"
+  gecscore_data_dir: "GECScore-main/GECScore-main/data"
+
+# Output settings
+output:
+  save_scores: true
+  save_predictions: true
+  save_features: false
+  format: "json"  # json, csv

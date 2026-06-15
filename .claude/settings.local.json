@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(python -m demo.src.detector_mini --n-samples 3)"
+    ]
+  }
+}
