@@ -20,6 +20,9 @@ try:
     from fusion.weighted_fusion import WeightedFusion
     from fusion.adaptive_fusion import AdaptiveFusion
     from fusion.cascade_fusion import CascadeFusion
+    from fusion.voting_fusion import VotingFusion
+    from fusion.improved_fusion import ImprovedFusion
+    from fusion.advanced_fusion import AdvancedFusion
     from utils.metrics import get_roc_metrics, get_metrics_with_threshold
     from utils.data_loader import DataLoader
 except ImportError:
@@ -29,6 +32,9 @@ except ImportError:
     from demo.src.fusion.weighted_fusion import WeightedFusion
     from demo.src.fusion.adaptive_fusion import AdaptiveFusion
     from demo.src.fusion.cascade_fusion import CascadeFusion
+    from demo.src.fusion.voting_fusion import VotingFusion
+    from demo.src.fusion.improved_fusion import ImprovedFusion
+    from demo.src.fusion.advanced_fusion import AdvancedFusion
     from demo.src.utils.metrics import get_roc_metrics, get_metrics_with_threshold
     from demo.src.utils.data_loader import DataLoader
 
@@ -39,7 +45,7 @@ class MultiFusionDetector:
     """
 
     def __init__(self,
-                 fusion_strategy: Literal['weighted', 'adaptive', 'cascade'] = 'weighted',
+                 fusion_strategy: Literal['weighted', 'adaptive', 'cascade', 'voting', 'improved', 'advanced'] = 'weighted',
                  coedit_model: str = "grammarly/coedit-large",
                  bart_model: str = "facebook/bart-base",
                  device: Optional[str] = None,
@@ -64,7 +70,7 @@ class MultiFusionDetector:
         # Initialize fusion strategy
         print(f"Initializing {fusion_strategy} fusion...")
         if fusion_strategy == 'weighted':
-            weights = kwargs.get('weights', {'coedit': 0.5, 'tocsin': 0.5})
+            weights = kwargs.get('weights', {'coedit': 0.2, 'tocsin': 0.8})
             self.fusion = WeightedFusion(weights=weights)
 
         elif fusion_strategy == 'adaptive':
@@ -79,6 +85,33 @@ class MultiFusionDetector:
             self.fusion = CascadeFusion(high_threshold=high_threshold,
                                         low_threshold=low_threshold,
                                         fusion_weight=fusion_weight)
+
+        elif fusion_strategy == 'voting':
+            voting_method = kwargs.get('voting_method', 'confidence')
+            confidence_method = kwargs.get('confidence_method', 'distance')
+            calibration = kwargs.get('calibration', True)
+            self.fusion = VotingFusion(
+                voting_method=voting_method,
+                confidence_method=confidence_method,
+                calibration=calibration
+            )
+
+        elif fusion_strategy == 'improved':
+            weight_method = kwargs.get('weight_method', 'adaptive')
+            self.fusion = ImprovedFusion(
+                weight_method=weight_method
+            )
+
+        elif fusion_strategy == 'advanced':
+            fusion_method = kwargs.get('fusion_method', 'ensemble')
+            use_pca = kwargs.get('use_pca', True)
+            pca_components = kwargs.get('pca_components', 5)
+            self.fusion = AdvancedFusion(
+                fusion_method=fusion_method,
+                use_pca=use_pca,
+                pca_components=pca_components
+            )
+
         else:
             raise ValueError(f"Unknown fusion strategy: {fusion_strategy}")
 
@@ -97,11 +130,12 @@ class MultiFusionDetector:
         """
         print(f"Scoring {len(texts)} texts...")
 
-        # Score with CoEdIT
+        # Score with CoEdIT (higher = more likely LLM)
         coedit_scores = self.coedit_channel.score_texts(texts, show_progress)
 
-        # Score with TOCSIN
-        tocsin_scores = self.tocsin_channel.score_texts(texts, show_progress)
+        # Score with TOCSIN (higher = more likely LLM after inversion)
+        # CRITICAL FIX: Use for_llm=True to invert TOCSIN scores
+        tocsin_scores = self.tocsin_channel.score_texts(texts, show_progress, for_llm=True)
 
         return {
             'coedit_scores': np.array(coedit_scores),
@@ -212,8 +246,8 @@ class MultiFusionDetector:
             }
 
         else:
-            # Weighted or adaptive fusion
-            if isinstance(self.fusion, WeightedFusion):
+            # Weighted, adaptive, voting, improved, or advanced fusion
+            if isinstance(self.fusion, (WeightedFusion, VotingFusion, ImprovedFusion, AdvancedFusion)):
                 # Use proper normalization: normalize across all samples together
                 human_channel_scores = {
                     'coedit': human_coedit,
@@ -309,8 +343,20 @@ def main():
                         help='Input data file (for detect mode)')
     parser.add_argument('--output', type=str, default=None,
                         help='Output file for results')
-    parser.add_argument('--fusion', type=str, choices=['weighted', 'adaptive', 'cascade'],
+    parser.add_argument('--fusion', type=str, choices=['weighted', 'adaptive', 'cascade', 'voting', 'improved', 'advanced'],
                         default='weighted', help='Fusion strategy')
+    parser.add_argument('--voting-method', type=str, default='confidence',
+                        choices=['soft', 'confidence', 'bayesian'],
+                        help='Voting method (for voting fusion)')
+    parser.add_argument('--confidence-method', type=str, default='distance',
+                        choices=['distance', 'entropy', 'variance'],
+                        help='Confidence calculation method (for voting fusion)')
+    parser.add_argument('--weight-method', type=str, default='adaptive',
+                        choices=['adaptive', 'equal', 'optimized'],
+                        help='Weight calculation method (for improved fusion)')
+    parser.add_argument('--normalization', type=str, default='minmax',
+                        choices=['robust', 'minmax', 'zscore'],
+                        help='Normalization method (deprecated, kept for compatibility)')
     parser.add_argument('--coedit-model', type=str, default='grammarly/coedit-large',
                         help='CoEdIT model name')
     parser.add_argument('--bart-model', type=str, default='facebook/bart-base',
@@ -325,10 +371,17 @@ def main():
                         help='Decision threshold')
     parser.add_argument('--n-samples', type=int, default=50,
                         help='Number of samples to evaluate (default: 50 for demo)')
-    parser.add_argument('--coedit-weight', type=float, default=0.5,
-                        help='Weight for CoEdIT channel (default: 0.5)')
-    parser.add_argument('--tocsin-weight', type=float, default=0.5,
-                        help='Weight for TOCSIN channel (default: 0.5)')
+    parser.add_argument('--coedit-weight', type=float, default=0.2,
+                        help='Weight for CoEdIT channel (default: 0.2 - optimized)')
+    parser.add_argument('--tocsin-weight', type=float, default=0.8,
+                        help='Weight for TOCSIN channel (default: 0.8 - optimized)')
+    parser.add_argument('--fusion-method', type=str, default='ensemble',
+                        choices=['ensemble', 'weighted', 'stacking'],
+                        help='Advanced fusion method (for advanced fusion)')
+    parser.add_argument('--use-pca', action='store_true',
+                        help='Use PCA for feature reduction (for advanced fusion)')
+    parser.add_argument('--pca-components', type=int, default=5,
+                        help='Number of PCA components (for advanced fusion)')
 
     args = parser.parse_args()
 
@@ -338,22 +391,55 @@ def main():
     if args.mode == 'evaluate' and args.dataset is None:
         parser.error("--dataset is required in evaluate mode")
 
-    # Normalize weights
-    total_weight = args.coedit_weight + args.tocsin_weight
-    if total_weight > 0:
-        coedit_w = args.coedit_weight / total_weight
-        tocsin_w = args.tocsin_weight / total_weight
+    # Initialize detector with fusion-specific parameters
+    if args.fusion == 'voting':
+        # Voting fusion parameters
+        detector = MultiFusionDetector(
+            fusion_strategy=args.fusion,
+            coedit_model=args.coedit_model,
+            bart_model=args.bart_model,
+            device=args.device,
+            voting_method=args.voting_method,
+            confidence_method=args.confidence_method,
+            calibration=True
+        )
+    elif args.fusion == 'improved':
+        # Improved fusion parameters
+        detector = MultiFusionDetector(
+            fusion_strategy=args.fusion,
+            coedit_model=args.coedit_model,
+            bart_model=args.bart_model,
+            device=args.device,
+            weight_method=args.weight_method
+        )
+    elif args.fusion == 'advanced':
+        # Advanced fusion parameters
+        detector = MultiFusionDetector(
+            fusion_strategy=args.fusion,
+            coedit_model=args.coedit_model,
+            bart_model=args.bart_model,
+            device=args.device,
+            fusion_method=args.fusion_method,
+            use_pca=args.use_pca,
+            pca_components=args.pca_components
+        )
     else:
-        coedit_w, tocsin_w = 0.5, 0.5
+        # Weighted fusion parameters
+        # Normalize weights
+        total_weight = args.coedit_weight + args.tocsin_weight
+        if total_weight > 0:
+            coedit_w = args.coedit_weight / total_weight
+            tocsin_w = args.tocsin_weight / total_weight
+        else:
+            coedit_w, tocsin_w = 0.5, 0.5
 
-    # Initialize detector with custom weights
-    detector = MultiFusionDetector(
-        fusion_strategy=args.fusion,
-        coedit_model=args.coedit_model,
-        bart_model=args.bart_model,
-        device=args.device,
-        weights={'coedit': coedit_w, 'tocsin': tocsin_w}
-    )
+        detector = MultiFusionDetector(
+            fusion_strategy=args.fusion,
+            coedit_model=args.coedit_model,
+            bart_model=args.bart_model,
+            device=args.device,
+            weights={'coedit': coedit_w, 'tocsin': tocsin_w}
+        )
 
     if args.mode == 'evaluate':
         # Evaluation mode

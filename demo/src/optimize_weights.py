@@ -51,9 +51,9 @@ class WeightOptimizer:
         print("Optimizer initialized!\n")
 
     def score_texts(self, texts: List[str]) -> Dict[str, np.ndarray]:
-        """Score texts using both channels."""
+        """Score texts using both channels. TOCSIN scores are LLM-oriented (high = LLM)."""
         coedit_scores = np.array(self.coedit_channel.score_texts(texts, show_progress=False))
-        tocsin_scores = np.array(self.tocsin_channel.score_texts(texts, show_progress=False))
+        tocsin_scores = np.array(self.tocsin_channel.score_texts(texts, show_progress=False, for_llm=True))
         return {
             'coedit': coedit_scores,
             'tocsin': tocsin_scores

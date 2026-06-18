@@ -16,12 +16,16 @@ try:
     from channels.coedit_channel import CoEdITChannel
     from channels.tocsin_channel import TOCSINChannel
     from fusion.weighted_fusion import WeightedFusion
+    from fusion.voting_fusion import VotingFusion
+    from fusion.improved_fusion import ImprovedFusion
     from utils.metrics import get_roc_metrics, get_metrics_with_threshold
     from utils.data_loader import DataLoader
 except ImportError:
     from demo.src.channels.coedit_channel import CoEdITChannel
     from demo.src.channels.tocsin_channel import TOCSINChannel
     from demo.src.fusion.weighted_fusion import WeightedFusion
+    from demo.src.fusion.voting_fusion import VotingFusion
+    from demo.src.fusion.improved_fusion import ImprovedFusion
     from demo.src.utils.metrics import get_roc_metrics, get_metrics_with_threshold
     from demo.src.utils.data_loader import DataLoader
 
@@ -32,28 +36,30 @@ class MiniDetector:
     """
 
     # Default test texts for quick debugging
+    # These are more realistic texts with actual differences
     DEFAULT_HUMAN_TEXTS = [
-        "The quick brown fox jumps over the lazy dog.",
-        "Machine learning has revolutionized data processing.",
-        "The weather today is quite pleasant and sunny.",
-        "Students should prepare thoroughly for exams.",
-        "The new policy received mixed reactions from stakeholders."
+        "I went to the store yesterday and bought some groceries. The milk was on sale so I got two cartons. When I got home, I realized I forgot to buy eggs, so I had to go back.",
+        "The conference was held in San Francisco last month. There were about 500 attendees from various companies. The keynote speaker discussed the future of artificial intelligence in healthcare.",
+        "My dog likes to play fetch in the park. Every morning we go for a walk and he runs around chasing the ball. Sometimes he meets other dogs and they play together.",
+        "I'm learning to play the guitar. It's been challenging but rewarding. I practice for about 30 minutes every day. My fingers hurt at first but now I'm getting used to the strings.",
+        "The new restaurant downtown serves amazing Italian food. I went there last weekend with my family. We ordered pasta, pizza, and salad. The service was excellent and the prices were reasonable."
     ]
 
     DEFAULT_LLM_TEXTS = [
-        "The rapid brown canine leaps above the sluggish canine.",
-        "Artificial intelligence has transformed data analysis methodologies.",
-        "Today's meteorological conditions are relatively favorable.",
-        "Learners ought to study comprehensively for assessments.",
-        "The recently implemented regulation garnered diverse responses."
+        "Proceeded to commercial establishment yesterday for grocery procurement transactions. Milk products featured promotional pricing, resulting in acquisition of dual containers. Upon residential arrival, recognized egg acquisition failure, necessitating return visitation.",
+        "The symposium was convened within San Francisco municipal boundaries during the previous calendar month. Approximately five hundred participants representing diverse corporate entities were in attendance. The featured presenter delivered discourse regarding artificial intelligence trajectories within healthcare delivery systems.",
+        "Canine companion exhibits recreational retrieval behavior within municipal park boundaries. Daily morning excursions occur accompanied by ball pursuit activities. Interspecies social interactions transpire during these temporal engagements with other quadruped entities.",
+        "Currently engaged in musical instrument acquisition endeavors specifically targeting guitar proficiency development. The educational process presents challenges的同时 yielding positive outcomes. Daily half-hour practice sessions are maintained. Digital discomfort initially manifested but adaptation has occurred.",
+        "The newly established dining facility located in the central business district specializes in Italian culinary preparation. Weekend familial patronage occurred recently. Comestible selections included pasta varieties, pizza preparations, and vegetable medleys. Service excellence was demonstrated alongside reasonable pricing structures."
     ]
 
     def __init__(self,
-                 fusion_strategy: Literal['weighted', 'adaptive'] = 'weighted',
+                 fusion_strategy: Literal['weighted', 'voting', 'improved'] = 'weighted',
                  coedit_model: str = "grammarly/coedit-large",
                  bart_model: str = "facebook/bart-base",
                  device: Optional[str] = None,
-                 n_samples: int = 3):
+                 n_samples: int = 3,
+                 **kwargs):
         """
         Initialize Mini Detector.
 
@@ -63,12 +69,14 @@ class MiniDetector:
             bart_model: BART model name
             device: Device to use (auto-detect if None)
             n_samples: Number of samples to use for testing
+            **kwargs: Additional arguments for fusion strategies
         """
         self.n_samples = n_samples
         self.fusion_strategy = fusion_strategy
 
         print("Initializing Mini Detector...")
         print(f"  Using {n_samples} samples for testing")
+        print(f"  Fusion strategy: {fusion_strategy}")
         print(f"  Device: {device or 'auto'}")
 
         # Initialize channels
@@ -79,15 +87,38 @@ class MiniDetector:
         self.tocsin_channel = TOCSINChannel(bart_model=bart_model, device=device)
 
         # Initialize fusion
-        weights = {'coedit': 0.5, 'tocsin': 0.5}
-        self.fusion = WeightedFusion(weights=weights)
+        print(f"  Initializing {fusion_strategy} fusion...")
+        if fusion_strategy == 'weighted':
+            weights = kwargs.get('weights', {'coedit': 0.2, 'tocsin': 0.8})
+            self.fusion = WeightedFusion(weights=weights)
+        elif fusion_strategy == 'voting':
+            voting_method = kwargs.get('voting_method', 'confidence')
+            confidence_method = kwargs.get('confidence_method', 'distance')
+            self.fusion = VotingFusion(
+                voting_method=voting_method,
+                confidence_method=confidence_method,
+                calibration=True
+            )
+        elif fusion_strategy == 'improved':
+            weight_method = kwargs.get('weight_method', 'adaptive')
+            self.fusion = ImprovedFusion(weight_method=weight_method)
+        else:
+            raise ValueError(f"Unknown fusion strategy: {fusion_strategy}")
 
         print("Mini Detector initialized!\n")
 
     def score_texts(self, texts: List[str]) -> Dict:
-        """Score texts using both channels."""
+        """
+        Score texts using both channels.
+
+        IMPORTANT: TOCSIN scores are inverted for LLM detection (high = LLM)
+        """
+        # CoEdIT: high = more likely LLM (original)
         coedit_scores = np.array(self.coedit_channel.score_texts(texts, show_progress=False))
-        tocsin_scores = np.array(self.tocsin_channel.score_texts(texts, show_progress=False))
+
+        # TOCSIN: high = more likely LLM (inverted from original)
+        tocsin_scores = np.array(self.tocsin_channel.score_texts(texts, show_progress=False, for_llm=True))
+
         return {'coedit': coedit_scores, 'tocsin': tocsin_scores}
 
     def quick_test(self,
@@ -128,18 +159,20 @@ class MiniDetector:
         llm_tocsin = llm_scores['tocsin']
 
         print("\n" + "="*60)
-        print("CHANNEL SCORES")
+        print("CHANNEL SCORES (LLM-oriented: high = more likely LLM)")
         print("="*60)
 
         print(f"\nCoEdIT Channel (Grammar):")
         print(f"  Human:  mean={human_coedit.mean():.4f}, std={human_coedit.std():.4f}")
         print(f"  LLM:    mean={llm_coedit.mean():.4f}, std={llm_coedit.std():.4f}")
         print(f"  Diff:   {llm_coedit.mean() - human_coedit.mean():+.4f}")
+        print(f"  Expected: LLM > Human (positive diff)")
 
-        print(f"\nTOCSIN Channel (Cohesiveness):")
+        print(f"\nTOCSIN Channel (Inverted Cohesiveness):")
         print(f"  Human:  mean={human_tocsin.mean():.4f}, std={human_tocsin.std():.4f}")
         print(f"  LLM:    mean={llm_tocsin.mean():.4f}, std={llm_tocsin.std():.4f}")
         print(f"  Diff:   {llm_tocsin.mean() - human_tocsin.mean():+.4f}")
+        print(f"  Expected: LLM > Human (positive diff)")
 
         # Normalize and fuse
         human_fused, llm_fused = self.fusion.normalize_and_fuse(human_scores, llm_scores)
@@ -148,6 +181,7 @@ class MiniDetector:
         print(f"  Human:  mean={human_fused.mean():.4f}, std={human_fused.std():.4f}")
         print(f"  LLM:    mean={llm_fused.mean():.4f}, std={llm_fused.std():.4f}")
         print(f"  Diff:   {llm_fused.mean() - human_fused.mean():+.4f}")
+        print(f"  Expected: LLM > Human (positive diff)")
 
         # Calculate metrics
         roc_auc, opt_threshold, _, _, _, _, _ = get_roc_metrics(
@@ -239,6 +273,15 @@ def main():
                         help='Dataset name (uses default texts if not specified)')
     parser.add_argument('--model', type=str, default='gpt-4',
                         help='Model name for dataset evaluation')
+    parser.add_argument('--fusion', type=str, default='improved',
+                        choices=['weighted', 'voting', 'improved'],
+                        help='Fusion strategy to use')
+    parser.add_argument('--weight-method', type=str, default='optimized',
+                        choices=['adaptive', 'equal', 'optimized'],
+                        help='Weight method for improved fusion')
+    parser.add_argument('--voting-method', type=str, default='confidence',
+                        choices=['soft', 'confidence', 'bayesian'],
+                        help='Voting method for voting fusion')
     parser.add_argument('--device', type=str, default=None,
                         help='Device to use')
     parser.add_argument('--output', type=str, default=None,
@@ -247,10 +290,17 @@ def main():
     args = parser.parse_args()
 
     # Initialize mini detector
+    kwargs = {}
+    if args.fusion == 'improved':
+        kwargs['weight_method'] = args.weight_method
+    elif args.fusion == 'voting':
+        kwargs['voting_method'] = args.voting_method
+
     detector = MiniDetector(
-        fusion_strategy='weighted',
+        fusion_strategy=args.fusion,
         device=args.device,
-        n_samples=args.n_samples
+        n_samples=args.n_samples,
+        **kwargs
     )
 
     # Run evaluation

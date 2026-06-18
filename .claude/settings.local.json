@@ -2,7 +2,18 @@
   "permissions": {
     "allow": [
       "WebSearch",
-      "Bash(python -m demo.src.detector_mini --n-samples 3)"
+      "Bash(python -m demo.src.detector_mini --n-samples 3)",
+      "Bash(python demo/src/test_voting.py)",
+      "Bash(python demo/src/debug_voting.py)",
+      "Bash(timeout 120 \"d:\\\\code_VScode\\\\GEC-TOCSIN\")",
+      "Bash(python demo/src/test_improved.py)",
+      "Bash(dir /b /s data)",
+      "Bash(dir /b /s GECScore-main\\\\data)",
+      "Bash(sleep 60 && cat /tmp/claude_check.txt 2>/dev/null || echo \"Still running...\")",
+      "Read(//tmp/**)",
+      "Read(//c/Users/Rainw/AppData/Local/Temp/claude/d--code_VScode-GEC-TOCSIN/434ad3a6-a4ec-41c1-b46e-48aa270fd626/tasks/**)",
+      "Bash(python -m src.detector_mini --n-samples 2 --fusion weighted)",
+      "Bash(python detector_mini.py --n-samples 2 --fusion weighted)"
     ]
   }
 }

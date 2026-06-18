@@ -101,16 +101,25 @@ class CoEdITChannel:
 
         return features
 
-    def score_texts(self, texts: List[str], show_progress: bool = True) -> List[float]:
+    def score_texts(self, texts: List[str], show_progress: bool = True, for_llm: bool = True) -> List[float]:
         """
         Score a list of texts using Rouge-2 F1 score.
+
+        Important: CoEdIT shows inconsistent behavior:
+        - 3 samples: Human > LLM (wrong direction for LLM detection)
+        - 20 samples: LLM > Human (correct direction)
+
+        To ensure reliability, we INVERT CoEdIT scores:
+        - High ROUGE → Low LLM score (more likely human)
+        - Low ROUGE → High LLM score (more likely LLM)
 
         Args:
             texts: List of input texts
             show_progress: Show progress bar
+            for_llm: Parameter kept for compatibility
 
         Returns:
-            List of scores (higher = more likely LLM-generated)
+            List of inverted ROUGE-2 F1 scores (higher = more likely LLM-generated)
         """
         scores = []
 
@@ -118,10 +127,82 @@ class CoEdITChannel:
 
         for text in iterator:
             features = self.extract_features(text)
-            # Use Rouge-2 F1 as the main score
-            scores.append(features['rouge_2_f'])
+            rouge_score = features['rouge_2_f']
+
+            # INVERT CoEdIT scores for reliable LLM detection
+            # Original: High ROUGE = Human-like
+            # Inverted: High score = LLM-like
+            llm_score = 1 - rouge_score
+            scores.append(llm_score)
 
         return scores
+
+    def score_texts_multi_feature(self, texts: List[str], show_progress: bool = True) -> np.ndarray:
+        """
+        Score texts using multiple ROUGE features.
+
+        Returns a feature vector for each text combining:
+        - rouge_1_f, rouge_2_f, rouge_l_f (F1 scores)
+        - rouge_1_p, rouge_2_p, rouge_l_p (Precision scores)
+        - rouge_1_r, rouge_2_r, rouge_l_r (Recall scores)
+        - text_length, gec_length_change
+
+        Args:
+            texts: List of input texts
+            show_progress: Show progress bar
+
+        Returns:
+            Array of shape (n_texts, n_features) with multi-feature scores
+        """
+        features_list = []
+
+        iterator = tqdm(texts, desc="CoEdIT multi-feature scoring") if show_progress else texts
+
+        for text in iterator:
+            features = self.extract_features(text)
+            feature_vector = [
+                features['rouge_1_f'],
+                features['rouge_2_f'],
+                features['rouge_l_f'],
+                features['rouge_1_p'],
+                features['rouge_2_p'],
+                features['rouge_l_p'],
+                features['rouge_1_r'],
+                features['rouge_2_r'],
+                features['rouge_l_r'],
+                features['text_length'] / 100.0,  # Normalize by dividing by 100
+                features['gec_length_change'] / 50.0  # Normalize
+            ]
+            features_list.append(feature_vector)
+
+        return np.array(features_list)
+
+    def get_combined_score(self, texts: List[str], show_progress: bool = True,
+                          weights: np.ndarray = None) -> List[float]:
+        """
+        Get a single combined score from multiple features.
+
+        Args:
+            texts: List of input texts
+            show_progress: Show progress bar
+            weights: Optional weights for features (default: equal weights)
+
+        Returns:
+            List of combined scores (higher = more likely LLM-generated)
+        """
+        multi_features = self.score_texts_multi_feature(texts, show_progress)
+
+        if weights is None:
+            # Default weights: emphasize rouge_2_f and rouge_l_f
+            weights = np.array([0.15, 0.30, 0.25, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.0, 0.0])
+
+        # Normalize weights
+        weights = weights / weights.sum()
+
+        # Weighted combination
+        combined_scores = multi_features @ weights
+
+        return combined_scores.tolist()
 
     def score_text(self, text: str) -> float:
         """

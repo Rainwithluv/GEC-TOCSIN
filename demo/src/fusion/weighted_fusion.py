@@ -17,10 +17,10 @@ class WeightedFusion:
 
         Args:
             weights: Dictionary mapping channel names to weights
-                    Default: {'coedit': 0.5, 'tocsin': 0.5}
+                    Default: {'coedit': 0.2, 'tocsin': 0.8} (optimized based on ROC AUC)
         """
         if weights is None:
-            weights = {'coedit': 0.5, 'tocsin': 0.5}
+            weights = {'coedit': 0.2, 'tocsin': 0.8}
 
         # Normalize weights
         total = sum(weights.values())

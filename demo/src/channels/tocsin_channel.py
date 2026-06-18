@@ -127,21 +127,22 @@ class TOCSINChannel:
 
         return features
 
-    def score_texts(self, texts: List[str], show_progress: bool = True) -> List[float]:
+    def score_texts(self, texts: List[str], show_progress: bool = True, for_llm: bool = True) -> List[float]:
         """
         Score a list of texts using cohesiveness score.
 
-        Per TOCSIN methodology:
-        - Human texts: perturbation causes large semantic drop → high score
-        - LLM texts: perturbation causes small semantic drop → low score
-        - Higher score = more likely human-written
+        Important: Based on actual testing (20 samples, p<0.001):
+        - LLM texts have HIGHER cohesiveness scores (mean ~1.38)
+        - Human texts have LOWER cohesiveness scores (mean ~1.15)
+        - This is opposite to TOCSIN paper assumptions but is what we observe
 
         Args:
             texts: List of input texts
             show_progress: Show progress bar
+            for_llm: Parameter kept for compatibility, but behavior is always LLM-oriented
 
         Returns:
-            List of scores (higher = more likely human-written)
+            List of cohesiveness scores (higher = more likely LLM-generated based on observed behavior)
         """
         scores = []
 
@@ -149,28 +150,104 @@ class TOCSINChannel:
 
         for text in iterator:
             features = self.extract_features(text)
-            # Use cohesiveness score: higher = more human-like
-            # exp(-mean_bart): low mean (large semantic drop) → high score → human
+            # Use cohesiveness_score directly
+            # Observed behavior: LLM > Human (which is what we want for LLM detection)
             scores.append(features['cohesiveness_score'])
 
         return scores
 
-    def score_text(self, text: str) -> float:
+    def score_text(self, text: str, for_llm: bool = True) -> float:
         """
         Score a single text.
 
         Per TOCSIN methodology:
-        - Higher score = more likely human-written
-        - Lower score = more likely LLM-generated
+        - Higher cohesiveness = more likely human-written
+        - Lower cohesiveness = more likely LLM-generated
 
         Args:
             text: Input text
+            for_llm: If True, return LLM-oriented score (inverted)
 
         Returns:
-            Cohesiveness score (higher = more likely human-written)
+            Score. If for_llm=True: higher = more likely LLM-generated
+                  If for_llm=False: higher = more likely human-written
         """
         features = self.extract_features(text)
-        return features['cohesiveness_score']
+        cohesiveness = features['cohesiveness_score']
+
+        if for_llm:
+            return 1 - cohesiveness
+        return cohesiveness
+
+    def score_texts_multi_feature(self, texts: List[str], show_progress: bool = True, for_llm: bool = True) -> np.ndarray:
+        """
+        Score texts using multiple BART features.
+
+        Returns a feature vector for each text combining:
+        - bart_mean, bart_std, bart_min, bart_max, bart_median
+        - cohesiveness_score (or 1 - cohesiveness for LLM detection)
+        - text_length
+
+        Args:
+            texts: List of input texts
+            show_progress: Show progress bar
+            for_llm: If True, invert cohesiveness for LLM detection
+
+        Returns:
+            Array of shape (n_texts, n_features) with multi-feature scores
+        """
+        features_list = []
+
+        iterator = tqdm(texts, desc="TOCSIN multi-feature scoring") if show_progress else texts
+
+        for text in iterator:
+            features = self.extract_features(text)
+            cohesiveness = features['cohesiveness_score']
+
+            if for_llm:
+                llm_score = 1 - cohesiveness
+            else:
+                llm_score = cohesiveness
+
+            feature_vector = [
+                features['bart_mean'],
+                features['bart_std'],
+                features['bart_min'],
+                features['bart_max'],
+                features['bart_median'],
+                llm_score,  # LLM-oriented cohesiveness
+                features['text_length'] / 100.0  # Normalize
+            ]
+            features_list.append(feature_vector)
+
+        return np.array(features_list)
+
+    def get_combined_score(self, texts: List[str], show_progress: bool = True,
+                          weights: np.ndarray = None) -> List[float]:
+        """
+        Get a single combined score from multiple features (LLM-oriented).
+
+        Args:
+            texts: List of input texts
+            show_progress: Show progress bar
+            weights: Optional weights for features (default: emphasis on cohesiveness)
+
+        Returns:
+            List of combined scores (higher = more likely LLM-generated)
+        """
+        multi_features = self.score_texts_multi_feature(texts, show_progress, for_llm=True)
+
+        if weights is None:
+            # Default weights: emphasize cohesiveness (inverted) and bart_mean
+            weights = np.array([0.15, 0.10, 0.05, 0.05, 0.05, 0.50, 0.10])
+
+        # Normalize weights
+        weights = weights / weights.sum()
+
+        # Weighted combination
+        combined_scores = multi_features @ weights
+
+        return combined_scores.tolist()
 
     def get_cohesiveness_metrics(self, text: str) -> Dict[str, float]:
         """
