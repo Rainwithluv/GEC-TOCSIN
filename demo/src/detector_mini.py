@@ -18,6 +18,7 @@ try:
     from fusion.weighted_fusion import WeightedFusion
     from fusion.voting_fusion import VotingFusion
     from fusion.improved_fusion import ImprovedFusion
+    from fusion.dynamic_attention_fusion import DynamicAttentionFusion
     from utils.metrics import get_roc_metrics, get_metrics_with_threshold
     from utils.data_loader import DataLoader
 except ImportError:
@@ -26,6 +27,7 @@ except ImportError:
     from demo.src.fusion.weighted_fusion import WeightedFusion
     from demo.src.fusion.voting_fusion import VotingFusion
     from demo.src.fusion.improved_fusion import ImprovedFusion
+    from demo.src.fusion.dynamic_attention_fusion import DynamicAttentionFusion
     from demo.src.utils.metrics import get_roc_metrics, get_metrics_with_threshold
     from demo.src.utils.data_loader import DataLoader
 
@@ -54,7 +56,7 @@ class MiniDetector:
     ]
 
     def __init__(self,
-                 fusion_strategy: Literal['weighted', 'voting', 'improved'] = 'weighted',
+                 fusion_strategy: Literal['weighted', 'voting', 'improved', 'dynamic'] = 'weighted',
                  coedit_model: str = "grammarly/coedit-large",
                  bart_model: str = "facebook/bart-base",
                  device: Optional[str] = None,
@@ -102,6 +104,17 @@ class MiniDetector:
         elif fusion_strategy == 'improved':
             weight_method = kwargs.get('weight_method', 'adaptive')
             self.fusion = ImprovedFusion(weight_method=weight_method)
+        elif fusion_strategy == 'dynamic':
+            dynamic_mode = kwargs.get('dynamic_mode', 'hybrid')
+            temperature = kwargs.get('temperature', 1.0)
+            min_weight = kwargs.get('min_weight', 0.1)
+            max_weight = kwargs.get('max_weight', 0.9)
+            self.fusion = DynamicAttentionFusion(
+                mode=dynamic_mode,
+                temperature=temperature,
+                min_weight=min_weight,
+                max_weight=max_weight
+            )
         else:
             raise ValueError(f"Unknown fusion strategy: {fusion_strategy}")
 
@@ -274,7 +287,7 @@ def main():
     parser.add_argument('--model', type=str, default='gpt-4',
                         help='Model name for dataset evaluation')
     parser.add_argument('--fusion', type=str, default='improved',
-                        choices=['weighted', 'voting', 'improved'],
+                        choices=['weighted', 'voting', 'improved', 'dynamic'],
                         help='Fusion strategy to use')
     parser.add_argument('--weight-method', type=str, default='optimized',
                         choices=['adaptive', 'equal', 'optimized'],
@@ -286,6 +299,11 @@ def main():
                         help='Device to use')
     parser.add_argument('--output', type=str, default=None,
                         help='Output file for results')
+    parser.add_argument('--dynamic-mode', type=str, default='hybrid',
+                        choices=['confidence', 'entropy', 'hybrid', 'attention'],
+                        help='Dynamic fusion mode (for dynamic fusion)')
+    parser.add_argument('--temperature', type=float, default=1.0,
+                        help='Temperature parameter for dynamic fusion')
 
     args = parser.parse_args()
 
@@ -295,6 +313,9 @@ def main():
         kwargs['weight_method'] = args.weight_method
     elif args.fusion == 'voting':
         kwargs['voting_method'] = args.voting_method
+    elif args.fusion == 'dynamic':
+        kwargs['dynamic_mode'] = args.dynamic_mode
+        kwargs['temperature'] = args.temperature
 
     detector = MiniDetector(
         fusion_strategy=args.fusion,

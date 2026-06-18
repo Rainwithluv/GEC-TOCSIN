@@ -23,6 +23,7 @@ try:
     from fusion.voting_fusion import VotingFusion
     from fusion.improved_fusion import ImprovedFusion
     from fusion.advanced_fusion import AdvancedFusion
+    from fusion.dynamic_attention_fusion import DynamicAttentionFusion
     from utils.metrics import get_roc_metrics, get_metrics_with_threshold
     from utils.data_loader import DataLoader
 except ImportError:
@@ -35,6 +36,7 @@ except ImportError:
     from demo.src.fusion.voting_fusion import VotingFusion
     from demo.src.fusion.improved_fusion import ImprovedFusion
     from demo.src.fusion.advanced_fusion import AdvancedFusion
+    from demo.src.fusion.dynamic_attention_fusion import DynamicAttentionFusion
     from demo.src.utils.metrics import get_roc_metrics, get_metrics_with_threshold
     from demo.src.utils.data_loader import DataLoader
 
@@ -45,7 +47,7 @@ class MultiFusionDetector:
     """
 
     def __init__(self,
-                 fusion_strategy: Literal['weighted', 'adaptive', 'cascade', 'voting', 'improved', 'advanced'] = 'weighted',
+                 fusion_strategy: Literal['weighted', 'adaptive', 'cascade', 'voting', 'improved', 'advanced', 'dynamic'] = 'weighted',
                  coedit_model: str = "grammarly/coedit-large",
                  bart_model: str = "facebook/bart-base",
                  device: Optional[str] = None,
@@ -110,6 +112,18 @@ class MultiFusionDetector:
                 fusion_method=fusion_method,
                 use_pca=use_pca,
                 pca_components=pca_components
+            )
+
+        elif fusion_strategy == 'dynamic':
+            dynamic_mode = kwargs.get('dynamic_mode', 'hybrid')
+            temperature = kwargs.get('temperature', 1.0)
+            min_weight = kwargs.get('min_weight', 0.1)
+            max_weight = kwargs.get('max_weight', 0.9)
+            self.fusion = DynamicAttentionFusion(
+                mode=dynamic_mode,
+                temperature=temperature,
+                min_weight=min_weight,
+                max_weight=max_weight
             )
 
         else:
@@ -246,8 +260,8 @@ class MultiFusionDetector:
             }
 
         else:
-            # Weighted, adaptive, voting, improved, or advanced fusion
-            if isinstance(self.fusion, (WeightedFusion, VotingFusion, ImprovedFusion, AdvancedFusion)):
+            # Weighted, adaptive, voting, improved, advanced, or dynamic fusion
+            if isinstance(self.fusion, (WeightedFusion, VotingFusion, ImprovedFusion, AdvancedFusion, DynamicAttentionFusion)):
                 # Use proper normalization: normalize across all samples together
                 human_channel_scores = {
                     'coedit': human_coedit,
@@ -343,7 +357,7 @@ def main():
                         help='Input data file (for detect mode)')
     parser.add_argument('--output', type=str, default=None,
                         help='Output file for results')
-    parser.add_argument('--fusion', type=str, choices=['weighted', 'adaptive', 'cascade', 'voting', 'improved', 'advanced'],
+    parser.add_argument('--fusion', type=str, choices=['weighted', 'adaptive', 'cascade', 'voting', 'improved', 'advanced', 'dynamic'],
                         default='weighted', help='Fusion strategy')
     parser.add_argument('--voting-method', type=str, default='confidence',
                         choices=['soft', 'confidence', 'bayesian'],
@@ -382,6 +396,15 @@ def main():
                         help='Use PCA for feature reduction (for advanced fusion)')
     parser.add_argument('--pca-components', type=int, default=5,
                         help='Number of PCA components (for advanced fusion)')
+    parser.add_argument('--dynamic-mode', type=str, default='hybrid',
+                        choices=['confidence', 'entropy', 'hybrid', 'attention'],
+                        help='Dynamic fusion mode (for dynamic fusion)')
+    parser.add_argument('--temperature', type=float, default=1.0,
+                        help='Temperature parameter for dynamic fusion weight smoothing (default: 1.0)')
+    parser.add_argument('--min-weight', type=float, default=0.1,
+                        help='Minimum weight for any channel in dynamic fusion (default: 0.1)')
+    parser.add_argument('--max-weight', type=float, default=0.9,
+                        help='Maximum weight for any channel in dynamic fusion (default: 0.9)')
 
     args = parser.parse_args()
 
@@ -422,6 +445,18 @@ def main():
             fusion_method=args.fusion_method,
             use_pca=args.use_pca,
             pca_components=args.pca_components
+        )
+    elif args.fusion == 'dynamic':
+        # Dynamic attention fusion parameters
+        detector = MultiFusionDetector(
+            fusion_strategy=args.fusion,
+            coedit_model=args.coedit_model,
+            bart_model=args.bart_model,
+            device=args.device,
+            dynamic_mode=args.dynamic_mode,
+            temperature=args.temperature,
+            min_weight=args.min_weight,
+            max_weight=args.max_weight
         )
     else:
         # Weighted fusion parameters
